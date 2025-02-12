@@ -3362,7 +3362,6 @@ pub const Expr = struct {
     pub fn hasAnyPropertyNamed(expr: *const Expr, comptime names: []const string) bool {
         if (std.meta.activeTag(expr.data) != .e_object) return false;
         const obj = expr.data.e_object;
-        if (@intFromPtr(obj.properties.ptr) == 0) return false;
 
         for (obj.properties.slice()) |prop| {
             if (prop.value == null) continue;

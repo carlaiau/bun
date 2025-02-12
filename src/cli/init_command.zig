@@ -562,8 +562,8 @@ pub const InitCommand = struct {
             const needs_dependencies = brk: {
                 if (fields.object.get("dependencies")) |deps| {
                     for (dependencies, 0..) |*dep, i| {
-                        if (deps.hasAnyPropertyNamed(&.{dep.name})) {
-                            needed_dependencies.set(i, false);
+                        if (deps.get(dep.name) != null) {
+                            needed_dependencies.unset(i);
                         }
                     }
                 }
@@ -574,8 +574,8 @@ pub const InitCommand = struct {
             const needs_dev_dependencies = brk: {
                 if (fields.object.get("devDependencies")) |deps| {
                     for (dev_dependencies, 0..) |*dep, i| {
-                        if (deps.hasAnyPropertyNamed(&.{dep.name})) {
-                            needed_dev_dependencies.set(i, false);
+                        if (deps.get(dep.name) != null) {
+                            needed_dev_dependencies.unset(i);
                         }
                     }
                 }
@@ -747,16 +747,16 @@ const DependencyGroup = struct {
         .devDependencies = [_]DependencyNeeded{
             .{ .name = "@types/react", .version = "^19" },
             .{ .name = "@types/react-dom", .version = "^19" },
-        } ++ blank.devDependencies.*,
+        } ++ blank.devDependencies[0..1].*,
     };
 
     pub const tailwind = DependencyGroup{
         .dependencies = [_]DependencyNeeded{
             .{ .name = "tailwindcss", .version = "^4" },
-        } ++ react.dependencies.*,
+        } ++ react.dependencies[0..react.dependencies.len].*,
         .devDependencies = [_]DependencyNeeded{
             .{ .name = "bun-plugin-tailwind", .version = "latest" },
-        } ++ react.devDependencies.*,
+        } ++ react.devDependencies[0..react.devDependencies.len].*,
     };
 
     pub const shadcn = DependencyGroup{
@@ -765,10 +765,10 @@ const DependencyGroup = struct {
             .{ .name = "class-variance-authority", .version = "latest" },
             .{ .name = "clsx", .version = "latest" },
             .{ .name = "tailwind-merge", .version = "latest" },
-        } ++ tailwind.dependencies.*,
+        } ++ tailwind.dependencies[0..tailwind.dependencies.len].*,
         .devDependencies = [_]DependencyNeeded{
             .{ .name = "bun-plugin-shadcn", .version = "latest" },
-        } ++ tailwind.devDependencies.*,
+        } ++ tailwind.devDependencies[0..tailwind.devDependencies.len].*,
     };
 };
 
