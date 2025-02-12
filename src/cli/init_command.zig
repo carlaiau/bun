@@ -740,35 +740,33 @@ const DependencyGroup = struct {
     };
 
     pub const react = DependencyGroup{
-        .dependencies = [_]DependencyNeeded{
+        .dependencies = &[_]DependencyNeeded{
             .{ .name = "react", .version = "^19" },
             .{ .name = "react-dom", .version = "^19" },
         },
-        .devDependencies = [_]DependencyNeeded{
+        .devDependencies = &[_]DependencyNeeded{
             .{ .name = "@types/react", .version = "^19" },
             .{ .name = "@types/react-dom", .version = "^19" },
         } ++ blank.devDependencies[0..1].*,
     };
 
     pub const tailwind = DependencyGroup{
-        .dependencies = [_]DependencyNeeded{
+        .dependencies = &[_]DependencyNeeded{
             .{ .name = "tailwindcss", .version = "^4" },
         } ++ react.dependencies[0..react.dependencies.len].*,
-        .devDependencies = [_]DependencyNeeded{
+        .devDependencies = &[_]DependencyNeeded{
             .{ .name = "bun-plugin-tailwind", .version = "latest" },
         } ++ react.devDependencies[0..react.devDependencies.len].*,
     };
 
     pub const shadcn = DependencyGroup{
-        .dependencies = [_]DependencyNeeded{
+        .dependencies = &[_]DependencyNeeded{
             .{ .name = "tailwindcss-animate", .version = "latest" },
             .{ .name = "class-variance-authority", .version = "latest" },
             .{ .name = "clsx", .version = "latest" },
             .{ .name = "tailwind-merge", .version = "latest" },
         } ++ tailwind.dependencies[0..tailwind.dependencies.len].*,
-        .devDependencies = [_]DependencyNeeded{
-            .{ .name = "bun-plugin-shadcn", .version = "latest" },
-        } ++ tailwind.devDependencies[0..tailwind.devDependencies.len].*,
+        .devDependencies = &[_]DependencyNeeded{} ++ tailwind.devDependencies[0..tailwind.devDependencies.len].*,
     };
 };
 
