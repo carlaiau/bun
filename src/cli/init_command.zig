@@ -59,6 +59,129 @@ pub const InitCommand = struct {
         }
     }
 
+    extern fn Bun__ttySetMode(fd: i32, mode: i32) i32;
+
+    fn processRadioButton(
+        label: string,
+        comptime choices: []const []const u8,
+        comptime choices_uncolored: []const []const u8,
+        default_value: usize,
+    ) !usize {
+        var selected = default_value;
+        switch (Output.enable_ansi_colors_stdout) {
+            inline else => |colors| {
+                while (true) {
+                    // Clear previous output if not first render
+                    // Move cursor up by number of choices + 2 (label line + empty line)
+                    defer {
+                        for (0..choices.len + 1) |_| {
+                            Output.print("\x1B[1A\x1B[2K", .{}); // Move up and clear line
+                        }
+                    }
+
+                    // Print label with currently selected option
+                    Output.prettyln("<r><cyan>?<r> {s} <d>› - Use arrow-keys. Return to submit.<r>", .{label});
+
+                    // Print options vertically
+                    inline for (choices, choices_uncolored, 0..) |option_colored, option_uncolored, i| {
+                        const option = if (colors) option_colored else option_uncolored;
+                        if (i == selected) {
+                            Output.pretty("<r><cyan>❯<r> ", .{});
+                            if (colors) {
+                                Output.print("\x1B[4m" ++ option ++ "\x1B[24m\n", .{});
+                            } else {
+                                Output.print(option ++ "\n", .{});
+                            }
+                        } else {
+                            Output.print("   " ++ option ++ "\n", .{});
+                        }
+                    }
+
+                    Output.flush();
+
+                    // Read a single character
+                    const byte = std.io.getStdIn().reader().readByte() catch return selected;
+
+                    switch (byte) {
+                        '\n', '\r' => return selected,
+                        3, 4 => return error.EndOfStream, // ctrl+c, ctrl+d
+                        '1'...'9' => {
+                            const choice = byte - '1';
+                            if (choice < choices.len) {
+                                return choice;
+                            }
+                        },
+                        27 => { // ESC sequence
+                            // Return immediately on plain ESC
+                            const next = std.io.getStdIn().reader().readByte() catch return error.EndOfStream;
+                            if (next != '[') return error.EndOfStream;
+
+                            // Read arrow key
+                            const arrow = std.io.getStdIn().reader().readByte() catch return error.EndOfStream;
+                            switch (arrow) {
+                                'A' => { // Up arrow
+                                    if (selected == 0) {
+                                        selected = choices.len - 1;
+                                    } else {
+                                        selected -= 1;
+                                    }
+                                },
+                                'B' => { // Down arrow
+                                    if (selected == choices.len - 1) {
+                                        selected = 0;
+                                    } else {
+                                        selected += 1;
+                                    }
+                                },
+                                else => {},
+                            }
+                        },
+                        else => {},
+                    }
+                }
+            },
+        }
+    }
+
+    pub fn radio(
+        label: string,
+        comptime choices: []const []const u8,
+        comptime choices_uncolored: []const []const u8,
+        default_value: usize,
+    ) !usize {
+
+        // Set raw mode to read single characters without echo
+        const original_mode: if (Environment.isWindows) ?bun.windows.DWORD else void = if (comptime Environment.isWindows)
+            bun.win32.unsetStdioModeFlags(0, bun.windows.ENABLE_VIRTUAL_TERMINAL_INPUT) catch null;
+
+        if (Environment.isPosix)
+            _ = Bun__ttySetMode(0, 1);
+
+        defer {
+            if (comptime Environment.isWindows) {
+                if (original_mode) |mode| {
+                    _ = bun.windows.SetConsoleMode(
+                        bun.win32.STDIN_FD.cast(),
+                        mode,
+                    );
+                }
+            } else {
+                _ = Bun__ttySetMode(0, 0);
+            }
+        }
+
+        return processRadioButton(label, choices, choices_uncolored, default_value) catch |err| {
+            if (err == error.EndOfStream) {
+                Output.flush();
+                // Add an "x" cancelled
+                Output.prettyln("<r><red>x<r> Cancelled", .{});
+                Global.exit(0);
+            }
+
+            return err;
+        };
+    }
+
     const Assets = struct {
         // "known" assets
         const @".gitignore" = @embedFile("init/gitignore.default");
@@ -144,6 +267,7 @@ pub const InitCommand = struct {
         type: string = "module",
         object: *js_ast.E.Object = undefined,
         entry_point: string = "",
+        private: bool = true,
     };
 
     pub fn exec(alloc: std.mem.Allocator, argv: [][:0]const u8) !void {
@@ -284,30 +408,97 @@ pub const InitCommand = struct {
             break :brk false;
         };
 
+        var chosen_template: ChosenTemplate = .blank;
+
         if (!auto_yes) {
             if (!did_load_package_json) {
-                Output.prettyln("<r><b>bun init<r> helps you get started with a minimal project and tries to guess sensible defaults. <d>Press ^C anytime to quit<r>\n\n", .{});
+                Output.prettyln("<r><b>bun init<r> helps you get started with a minimal project and tries to guess sensible defaults. <d>Press CTRL + C anytime to quit<r>\n\n", .{});
                 Output.flush();
 
-                const name = prompt(
-                    alloc,
-                    "<r><cyan>package name<r> ",
-                    fields.name,
-                ) catch |err| {
-                    if (err == error.EndOfStream) return;
-                    return err;
+                const choices = &[_][]const u8{
+                    "TypeScript",
+                    "React",
+                    "TypeScript Library",
+                };
+                const choices_colored = &[_][]const u8{
+                    // <blue>TypeScript (blank)
+                    "\x1B[35mTypeScript\x1B[39m\x1B[0m (blank)",
+                    // <cyan>React
+                    "\x1B[36mReact\x1B[39m",
+                    // <blue>TypeScript library
+                    "\x1B[35mTypeScript\x1B[39m\x1B[0m (library)",
                 };
 
-                fields.name = try normalizePackageName(alloc, name);
+                const selected = try radio(
+                    "Select a project",
+                    choices_colored,
+                    choices,
+                    0,
+                );
+                Output.prettyln("<green>✔<r> Select a project: › {s}", .{choices_colored[selected]});
 
-                fields.entry_point = prompt(
-                    alloc,
-                    "<r><cyan>entry point<r> ",
-                    fields.entry_point,
-                ) catch |err| {
-                    if (err == error.EndOfStream) return;
-                    return err;
-                };
+                switch (selected) {
+                    2 => {
+                        chosen_template = .typescript_library;
+                        fields.name = prompt(
+                            alloc,
+                            "<r><cyan>package name<r> ",
+                            fields.name,
+                        ) catch |err| {
+                            if (err == error.EndOfStream) return;
+                            return err;
+                        };
+                        fields.name = try normalizePackageName(alloc, fields.name);
+                        fields.entry_point = prompt(
+                            alloc,
+                            "<r><cyan>entry point<r> ",
+                            fields.entry_point,
+                        ) catch |err| {
+                            if (err == error.EndOfStream) return;
+                            return err;
+                        };
+                        fields.private = false;
+                    },
+                    1 => {
+                        const react_choices = &[_][]const u8{
+                            "Default (blank)",
+                            "Tailwind CSS",
+                            "Shadcn UI + Tailwind CSS",
+                        };
+                        const react_choices_colored = &[_][]const u8{
+                            // <green>Default (blank)
+                            "\x1B[32mDefault (blank)\x1B[39m\x1B[0m",
+                            // <magenta>Tailwind CSS
+                            "\x1B[35mTailwind CSS\x1B[39m",
+                            // <green>Shadcn + Tailwind CSS
+                            "\x1B[32mshadcn + Tailwind CSS\x1B[39m\x1B[0m",
+                        };
+
+                        const react_selected = try radio(
+                            "Select a React template",
+                            react_choices_colored,
+                            react_choices,
+                            0,
+                        );
+
+                        switch (react_selected) {
+                            0 => {
+                                chosen_template = .react_blank;
+                            },
+                            1 => {
+                                chosen_template = .react_tailwind;
+                            },
+                            2 => {
+                                chosen_template = .react_tailwind_shadcn;
+                            },
+                            else => unreachable,
+                        }
+                    },
+                    0 => {
+                        chosen_template = .blank;
+                    },
+                    else => unreachable,
+                }
 
                 try Output.writer().writeAll("\n");
                 Output.flush();
@@ -355,14 +546,41 @@ pub const InitCommand = struct {
                 }
             }
 
-            const needs_dev_dependencies = brk: {
-                if (fields.object.get("devDependencies")) |deps| {
-                    if (deps.hasAnyPropertyNamed(&.{"bun-types"})) {
-                        break :brk false;
+            if (fields.private) {
+                try fields.object.put(alloc, "private", js_ast.Expr.init(js_ast.E.Boolean, .{ .value = true }, logger.Loc.Empty));
+            }
+        }
+        {
+            const all_dependencies = chosen_template.dependencies();
+            const dependencies = all_dependencies.dependencies;
+            const dev_dependencies = all_dependencies.devDependencies;
+            var needed_dependencies = bun.bit_set.IntegerBitSet(64).initEmpty();
+            var needed_dev_dependencies = bun.bit_set.IntegerBitSet(64).initEmpty();
+            needed_dependencies.setRangeValue(.{ .start = 0, .end = dependencies.len }, true);
+            needed_dev_dependencies.setRangeValue(.{ .start = 0, .end = dev_dependencies.len }, true);
+
+            const needs_dependencies = brk: {
+                if (fields.object.get("dependencies")) |deps| {
+                    for (dependencies, 0..) |*dep, i| {
+                        if (deps.hasAnyPropertyNamed(&.{dep.name})) {
+                            needed_dependencies.set(i, false);
+                        }
                     }
                 }
 
-                break :brk true;
+                break :brk needed_dependencies.count() > 0;
+            };
+
+            const needs_dev_dependencies = brk: {
+                if (fields.object.get("devDependencies")) |deps| {
+                    for (dev_dependencies, 0..) |*dep, i| {
+                        if (deps.hasAnyPropertyNamed(&.{dep.name})) {
+                            needed_dev_dependencies.set(i, false);
+                        }
+                    }
+                }
+
+                break :brk needed_dev_dependencies.count() > 0;
             };
 
             const needs_typescript_dependency = brk: {
@@ -381,15 +599,29 @@ pub const InitCommand = struct {
                 break :brk true;
             };
 
+            if (needs_dependencies) {
+                var dependencies_object = fields.object.get("dependencies") orelse js_ast.Expr.init(js_ast.E.Object, js_ast.E.Object{}, logger.Loc.Empty);
+                var iter = needed_dependencies.iterator(.{ .kind = .set });
+                while (iter.next()) |index| {
+                    const dep = dependencies[index];
+                    try dependencies_object.data.e_object.putString(alloc, dep.name, dep.version);
+                }
+                try fields.object.put(alloc, "dependencies", dependencies_object);
+            }
+
             if (needs_dev_dependencies) {
-                var dev_dependencies = fields.object.get("devDependencies") orelse js_ast.Expr.init(js_ast.E.Object, js_ast.E.Object{}, logger.Loc.Empty);
-                try dev_dependencies.data.e_object.putString(alloc, "@types/bun", "latest");
-                try fields.object.put(alloc, "devDependencies", dev_dependencies);
+                var object = fields.object.get("devDependencies") orelse js_ast.Expr.init(js_ast.E.Object, js_ast.E.Object{}, logger.Loc.Empty);
+                var iter = needed_dev_dependencies.iterator(.{ .kind = .set });
+                while (iter.next()) |index| {
+                    const dep = dev_dependencies[index];
+                    try object.data.e_object.putString(alloc, dep.name, dep.version);
+                }
+                try fields.object.put(alloc, "devDependencies", object);
             }
 
             if (needs_typescript_dependency) {
                 var peer_dependencies = fields.object.get("peer_dependencies") orelse js_ast.Expr.init(js_ast.E.Object, js_ast.E.Object{}, logger.Loc.Empty);
-                try peer_dependencies.data.e_object.putString(alloc, "typescript", "^5.0.0");
+                try peer_dependencies.data.e_object.putString(alloc, "typescript", "^5");
                 try fields.object.put(alloc, "peerDependencies", peer_dependencies);
             }
         }
@@ -488,5 +720,72 @@ pub const InitCommand = struct {
             process.stdout_behavior = .Ignore;
             _ = try process.spawnAndWait();
         }
+    }
+};
+
+const DependencyNeeded = struct {
+    name: []const u8,
+    version: []const u8,
+};
+
+const DependencyGroup = struct {
+    dependencies: []const DependencyNeeded,
+    devDependencies: []const DependencyNeeded,
+
+    pub const blank = DependencyGroup{
+        .dependencies = &[_]DependencyNeeded{},
+        .devDependencies = &[_]DependencyNeeded{
+            .{ .name = "@types/bun", .version = "latest" },
+        },
+    };
+
+    pub const react = DependencyGroup{
+        .dependencies = [_]DependencyNeeded{
+            .{ .name = "react", .version = "^19" },
+            .{ .name = "react-dom", .version = "^19" },
+        },
+        .devDependencies = [_]DependencyNeeded{
+            .{ .name = "@types/react", .version = "^19" },
+            .{ .name = "@types/react-dom", .version = "^19" },
+        } ++ blank.devDependencies.*,
+    };
+
+    pub const tailwind = DependencyGroup{
+        .dependencies = [_]DependencyNeeded{
+            .{ .name = "tailwindcss", .version = "^4" },
+        } ++ react.dependencies.*,
+        .devDependencies = [_]DependencyNeeded{
+            .{ .name = "bun-plugin-tailwind", .version = "latest" },
+        } ++ react.devDependencies.*,
+    };
+
+    pub const shadcn = DependencyGroup{
+        .dependencies = [_]DependencyNeeded{
+            .{ .name = "tailwindcss-animate", .version = "latest" },
+            .{ .name = "class-variance-authority", .version = "latest" },
+            .{ .name = "clsx", .version = "latest" },
+            .{ .name = "tailwind-merge", .version = "latest" },
+        } ++ tailwind.dependencies.*,
+        .devDependencies = [_]DependencyNeeded{
+            .{ .name = "bun-plugin-shadcn", .version = "latest" },
+        } ++ tailwind.devDependencies.*,
+    };
+};
+
+const ChosenTemplate = enum {
+    blank,
+    react_blank,
+    react_tailwind,
+    react_tailwind_shadcn,
+    typescript_library,
+
+    pub fn dependencies(this: ChosenTemplate) DependencyGroup {
+        return switch (this) {
+            .blank => DependencyGroup.blank,
+            .react_blank => DependencyGroup.react,
+            .react_tailwind => DependencyGroup.tailwind,
+            .react_tailwind_shadcn => DependencyGroup.shadcn,
+            .typescript_library => DependencyGroup.blank,
+        };
     }
 };
