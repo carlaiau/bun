@@ -67,33 +67,38 @@ pub const InitCommand = struct {
         comptime choices_uncolored: []const []const u8,
         default_value: usize,
     ) !usize {
+
+        // Save the cursor position so we can restore to this line on every iteration
+        // ESC[s  or  ESC7    (both are fairly standard; ESC[s is more widely recognized)
+        Output.print("\x1B[s", .{});
+        Output.flush();
+
         var selected = default_value;
         switch (Output.enable_ansi_colors_stdout) {
             inline else => |colors| {
                 while (true) {
-                    // Clear previous output if not first render
-                    // Move cursor up by number of choices + 2 (label line + empty line)
-                    defer {
-                        for (0..choices.len + 1) |_| {
-                            Output.print("\x1B[1A\x1B[2K", .{}); // Move up and clear line
-                        }
-                    }
+                    // Restore cursor position
+                    Output.print("\x1B[u", .{});
 
-                    // Print label with currently selected option
+                    // Clear from cursor to end of screen (so old menu text is removed)
+                    Output.print("\x1B[J", .{});
+
+                    // Print the question prompt
                     Output.prettyln("<r><cyan>?<r> {s} <d>› - Use arrow-keys. Return to submit.<r>", .{label});
 
                     // Print options vertically
                     inline for (choices, choices_uncolored, 0..) |option_colored, option_uncolored, i| {
                         const option = if (colors) option_colored else option_uncolored;
                         if (i == selected) {
-                            Output.pretty("<r><cyan>❯<r> ", .{});
+                            Output.pretty("<r><cyan>❯<r>   ", .{});
                             if (colors) {
+                                // Handle line wrapping for selected item
                                 Output.print("\x1B[4m" ++ option ++ "\x1B[24m\n", .{});
                             } else {
-                                Output.print(option ++ "\n", .{});
+                                Output.print("    " ++ option ++ "\n", .{});
                             }
                         } else {
-                            Output.print("   " ++ option ++ "\n", .{});
+                            Output.print("    " ++ option ++ "\n", .{});
                         }
                     }
 
@@ -170,7 +175,7 @@ pub const InitCommand = struct {
             }
         }
 
-        return processRadioButton(label, choices, choices_uncolored, default_value) catch |err| {
+        const selection = processRadioButton(label, choices, choices_uncolored, default_value) catch |err| {
             if (err == error.EndOfStream) {
                 Output.flush();
                 // Add an "x" cancelled
@@ -180,6 +185,16 @@ pub const InitCommand = struct {
 
             return err;
         };
+
+        if (Output.enable_ansi_colors_stdout) {
+            Output.prettyln("<green>✔<r> {s}: › {s}", .{ label, choices[selection] });
+        } else {
+            Output.prettyln("<green>✔<r> {s}: › {s}", .{ label, choices_uncolored[selection] });
+        }
+
+        Output.flush();
+
+        return selection;
     }
 
     const Assets = struct {
@@ -422,11 +437,11 @@ pub const InitCommand = struct {
                 };
                 const choices_colored = &[_][]const u8{
                     // <blue>TypeScript (blank)
-                    "\x1B[35mTypeScript\x1B[39m\x1B[0m (blank)",
+                    "\x1B[34mTypeScript\x1B[39m\x1B[0m (blank)",
                     // <cyan>React
                     "\x1B[36mReact\x1B[39m",
                     // <blue>TypeScript library
-                    "\x1B[35mTypeScript\x1B[39m\x1B[0m (library)",
+                    "\x1B[34mTypeScript\x1B[39m\x1B[0m (library)",
                 };
 
                 const selected = try radio(
@@ -435,7 +450,6 @@ pub const InitCommand = struct {
                     choices,
                     0,
                 );
-                Output.prettyln("<green>✔<r> Select a project: › {s}", .{choices_colored[selected]});
 
                 switch (selected) {
                     2 => {
@@ -466,10 +480,9 @@ pub const InitCommand = struct {
                             "Shadcn UI + Tailwind CSS",
                         };
                         const react_choices_colored = &[_][]const u8{
-                            // <green>Default (blank)
-                            "\x1B[32mDefault (blank)\x1B[39m\x1B[0m",
+                            "Default (blank)",
                             // <magenta>Tailwind CSS
-                            "\x1B[35mTailwind CSS\x1B[39m",
+                            "\x1B[36mTailwind CSS\x1B[39m",
                             // <green>Shadcn + Tailwind CSS
                             "\x1B[32mshadcn + Tailwind CSS\x1B[39m\x1B[0m",
                         };
