@@ -1,15 +1,8 @@
-import "bun";
-import { expect, test, describe, beforeEach, afterAll } from "bun:test";
-import { tempDirWithFiles as tempDir, bunExe, bunEnv, isCI, isWindows, nodeExe } from "harness";
-import { cp, readdir } from "fs/promises";
-import path from "path";
 import type { Subprocess } from "bun";
-import * as vm from "vm";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { BrowserErrorCaptureEnum, Window, Browser } from "happy-dom";
-const env = {
-  ...bunEnv,
-};
+import { beforeEach, describe, expect, test } from "bun:test";
+import { cp, readdir } from "fs/promises";
+import { bunEnv, bunExe, isCI, isWindows, tempDirWithFiles as tempDir } from "harness";
+import path from "path";
 
 async function getServerUrl(process: Subprocess<any, "pipe", any>, all = { text: "" }) {
   // Read the port number from stdout
