@@ -67,24 +67,43 @@ pub const InitCommand = struct {
         comptime choices_uncolored: []const []const u8,
         default_value: usize,
     ) !usize {
-
-        // Save the cursor position so we can restore to this line on every iteration
-        // ESC[s  or  ESC7    (both are fairly standard; ESC[s is more widely recognized)
-        Output.print("\x1B[s", .{});
-        Output.flush();
+        // Print the question prompt
+        Output.prettyln("<r><cyan>?<r> {s} <d>› - Use arrow-keys. Return to submit.<r>", .{label});
 
         var selected = default_value;
+        var initial_draw = true;
+        var reprint_menu = true;
+        errdefer reprint_menu = false;
+        defer {
+            if (!initial_draw) {
+                // Move cursor up to prompt line
+                Output.print("\x1B[{}A", .{choices.len + 1});
+            }
+
+            // Clear from cursor to end of screen
+            Output.print("\x1B[J", .{});
+
+            if (reprint_menu) {
+                // Print final selection
+                if (Output.enable_ansi_colors_stdout) {
+                    Output.prettyln("<r><cyan>?<r> {s} <d>› {s}<r>", .{ label, choices[selected] });
+                } else {
+                    Output.prettyln("<r><cyan>?<r> {s} <d>› {s}<r>", .{ label, choices_uncolored[selected] });
+                }
+            }
+        }
+
         switch (Output.enable_ansi_colors_stdout) {
             inline else => |colors| {
                 while (true) {
-                    // Restore cursor position
-                    Output.print("\x1B[u", .{});
+                    if (!initial_draw) {
+                        // Move cursor up by number of choices + 1 (for prompt)
+                        Output.print("\x1B[{}A", .{choices.len + 1});
+                    }
+                    initial_draw = false;
 
-                    // Clear from cursor to end of screen (so old menu text is removed)
+                    // Clear from cursor to end of screen
                     Output.print("\x1B[J", .{});
-
-                    // Print the question prompt
-                    Output.prettyln("<r><cyan>?<r> {s} <d>› - Use arrow-keys. Return to submit.<r>", .{label});
 
                     // Print options vertically
                     inline for (choices, choices_uncolored, 0..) |option_colored, option_uncolored, i| {
@@ -92,7 +111,6 @@ pub const InitCommand = struct {
                         if (i == selected) {
                             Output.pretty("<r><cyan>❯<r>   ", .{});
                             if (colors) {
-                                // Handle line wrapping for selected item
                                 Output.print("\x1B[4m" ++ option ++ "\x1B[24m\n", .{});
                             } else {
                                 Output.print("    " ++ option ++ "\n", .{});
@@ -108,7 +126,9 @@ pub const InitCommand = struct {
                     const byte = std.io.getStdIn().reader().readByte() catch return selected;
 
                     switch (byte) {
-                        '\n', '\r' => return selected,
+                        '\n', '\r' => {
+                            return selected;
+                        },
                         3, 4 => return error.EndOfStream, // ctrl+c, ctrl+d
                         '1'...'9' => {
                             const choice = byte - '1';
@@ -185,12 +205,6 @@ pub const InitCommand = struct {
 
             return err;
         };
-
-        if (Output.enable_ansi_colors_stdout) {
-            Output.prettyln("<green>✔<r> {s}: › {s}", .{ label, choices[selection] });
-        } else {
-            Output.prettyln("<green>✔<r> {s}: › {s}", .{ label, choices_uncolored[selection] });
-        }
 
         Output.flush();
 
@@ -423,7 +437,7 @@ pub const InitCommand = struct {
             break :brk false;
         };
 
-        var chosen_template: ChosenTemplate = .blank;
+        var template: Template = .blank;
 
         if (!auto_yes) {
             if (!did_load_package_json) {
@@ -453,7 +467,7 @@ pub const InitCommand = struct {
 
                 switch (selected) {
                     2 => {
-                        chosen_template = .typescript_library;
+                        template = .typescript_library;
                         fields.name = prompt(
                             alloc,
                             "<r><cyan>package name<r> ",
@@ -496,19 +510,19 @@ pub const InitCommand = struct {
 
                         switch (react_selected) {
                             0 => {
-                                chosen_template = .react_blank;
+                                template = .react_blank;
                             },
                             1 => {
-                                chosen_template = .react_tailwind;
+                                template = .react_tailwind;
                             },
                             2 => {
-                                chosen_template = .react_tailwind_shadcn;
+                                template = .react_tailwind_shadcn;
                             },
                             else => unreachable,
                         }
                     },
                     0 => {
-                        chosen_template = .blank;
+                        template = .blank;
                     },
                     else => unreachable,
                 }
@@ -564,7 +578,7 @@ pub const InitCommand = struct {
             }
         }
         {
-            const all_dependencies = chosen_template.dependencies();
+            const all_dependencies = template.dependencies();
             const dependencies = all_dependencies.dependencies;
             const dev_dependencies = all_dependencies.devDependencies;
             var needed_dependencies = bun.bit_set.IntegerBitSet(64).initEmpty();
@@ -660,6 +674,8 @@ pub const InitCommand = struct {
             std.posix.ftruncate(package_json_file.?.handle, written + 1) catch {};
             package_json_file.?.close();
         }
+
+        if (template.isReact()) {}
 
         if (package_json_file != null) {
             Output.prettyln("<r><green>Done!<r> A package.json file was saved in the current directory.", .{});
@@ -783,14 +799,19 @@ const DependencyGroup = struct {
     };
 };
 
-const ChosenTemplate = enum {
+const Template = enum {
     blank,
     react_blank,
     react_tailwind,
     react_tailwind_shadcn,
     typescript_library,
-
-    pub fn dependencies(this: ChosenTemplate) DependencyGroup {
+    pub fn isReact(this: Template) bool {
+        return switch (this) {
+            .react_blank, .react_tailwind, .react_tailwind_shadcn => true,
+            else => false,
+        };
+    }
+    pub fn dependencies(this: Template) DependencyGroup {
         return switch (this) {
             .blank => DependencyGroup.blank,
             .react_blank => DependencyGroup.react,
